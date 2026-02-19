@@ -1,0 +1,70 @@
+name: Build and Format Check
+
+on:
+  pull_request:
+    branches: ['**']
+  push:
+    branches: ['**']
+
+jobs:
+  build-and-format:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      matrix:
+        include:
+          - image: ros:humble-ros-base
+            ros-distro: humble
+          - image: ros:jazzy-ros-base
+            ros-distro: jazzy
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ROS 2 and dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt install -y rsync sshpass openssh-client libglfw3-dev libxinerama-dev libxcursor-dev
+          sudo apt install -y ros-dev-tools ros-${{ matrix.ros-distro }}-rmw-cyclonedds-cpp ros-${{ matrix.ros-distro }}-ros-base
+          sudo apt install -y python3-rosdep
+
+      - name: Install third-party dependencies
+        shell: bash
+        run: |
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE"
+          ./src/third_party/install.sh
+
+      # Install all dependencies using rosdep
+      - name: Install dependencies via rosdep
+        shell: bash
+        run: |
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE"
+          source /opt/ros/${{ matrix.ros-distro }}/setup.bash
+          sudo rosdep init || true
+          rosdep update
+          rosdep install --from-paths src --ignore-src -r -y
+
+      - name: Build ROS2 workspace
+        shell: bash
+        run: |
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE"
+          source /opt/ros/${{ matrix.ros-distro }}/setup.bash
+          colcon build
+        continue-on-error: false
+
+      - name: Run tests
+        shell: bash
+        run: |
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE"
+          source /opt/ros/${{ matrix.ros-distro }}/setup.bash
+          source install/setup.bash
+          colcon test --executor parallel
+        continue-on-error: true
