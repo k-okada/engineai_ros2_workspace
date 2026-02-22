@@ -16,13 +16,16 @@
 #define ENGINEAI_HARDWARE_INTERFACE_HPP_
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
+#include "rclcpp/rclcpp.hpp"
 #include "rclcpp/macros.hpp"
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
@@ -32,6 +35,20 @@
 #include "interface_protocol/msg/joint_command.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 
+#include "hardware_interface/version.h"
+#if defined(HARDWARE_INTERFACE_VERSION_MAJOR)
+// use get/set for 4.18.0-
+  #if (HARDWARE_INTERFACE_VERSION_MAJOR < 4) || \
+      (HARDWARE_INTERFACE_VERSION_MAJOR == 4 && HARDWARE_INTERFACE_VERSION_MINOR < 18)
+    #define ENGINEAI_NEEDS_LOCAL_GETSET 1
+  #else
+    #define ENGINEAI_NEEDS_LOCAL_GETSET 0
+  #endif
+#else
+  // use old interface when version.h is not found
+  #define ENGINEAI_NEEDS_LOCAL_GETSET 0
+#endif
+
 namespace engineai_hardware_interface
 {
 class EngineAI_SystemPositionOnlyHardware : public hardware_interface::SystemInterface
@@ -40,7 +57,7 @@ public:
   RCLCPP_SHARED_PTR_DEFINITIONS(EngineAI_SystemPositionOnlyHardware)
 
   hardware_interface::CallbackReturn on_init(
-    const hardware_interface::HardwareComponentInterfaceParams & params) override;
+    const hardware_interface::HardwareInfo & info) override;
 
   hardware_interface::CallbackReturn on_configure(
     const rclcpp_lifecycle::State & previous_state) override;
@@ -57,11 +74,48 @@ public:
   hardware_interface::return_type write(
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
 
+#if ENGINEAI_NEEDS_LOCAL_GETSET
+  std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
+
+  std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
+
+  /// Get the logger of the SystemInterface.
+  /**
+   * \return logger of the SystemInterface.
+   */
+  rclcpp::Logger get_logger() const { return *logger_; }
+
+  /// Get the clock of the SystemInterface.
+  /**
+   * \return clock of the SystemInterface.
+   */
+  rclcpp::Clock::SharedPtr get_clock() const { return clock_; }
+
+  bool set_command(const std::string& key, double value);
+  double get_command(const std::string& key) const;
+  bool set_state(const std::string & key, double value);
+  double get_state(const std::string & key) const;
+
+  std::unordered_map<std::string, size_t> joint_index_;
+  std::vector<std::pair<std::string, size_t>> joint_state_interfaces_;
+  std::vector<std::pair<std::string, size_t>> joint_command_interfaces_;
+#endif
+
 private:
   // Parameters for the engineai simulation
   double hw_start_sec_;
   double hw_stop_sec_;
   double hw_slowdown_;
+
+#if ENGINEAI_NEEDS_LOCAL_GETSET
+  // Objects for logging
+  std::shared_ptr<rclcpp::Logger> logger_;
+  rclcpp::Clock::SharedPtr clock_;
+
+  // Store the command for the simulated robot
+  std::vector<double> hw_commands_;
+  std::vector<double> hw_states_;
+#endif
 
   double default_stiffness_{20.0};
   double default_damping_{1.0};
@@ -79,7 +133,7 @@ private:
   std::mutex mtx_;
   std::unordered_map<std::string, double> latest_pos_;
   std::unordered_map<std::string, double> latest_vel_;
-  std::unordered_map<std::string, double> latest_tor_;  
+  std::unordered_map<std::string, double> latest_tor_;
   sensor_msgs::msg::Imu latest_imu_;
   std::vector<std::string> joint_names_;
 };

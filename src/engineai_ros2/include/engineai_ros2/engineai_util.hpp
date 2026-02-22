@@ -154,5 +154,21 @@ static std::string get_string_param(
   return (it == p.end()) ? fallback : it->second;
 }
 
+// ex: "J00_HIP_PITCH_L/position" -> "J00_HIP_PITCH_L"
+static inline std::string normalize_joint_key(std::string key)
+{
+  auto pos = key.find('/');
+  if (pos != std::string::npos) key = key.substr(0, pos);
+  return key;
+}
 
+inline std::optional<size_t> joint_index(
+  const std::vector<std::string> & joint_names,
+  const std::string & key)
+{
+  const std::string joint = normalize_joint_key(key);  // "Jxx_.../position" -> "Jxx_..."
+  auto it = std::find(joint_names.begin(), joint_names.end(), joint);
+  if (it == joint_names.end()) return std::nullopt;
+  return static_cast<size_t>(std::distance(joint_names.begin(), it));
+}
 #endif  // ENGINEAI_UTIL_HPP_

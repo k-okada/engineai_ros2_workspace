@@ -39,21 +39,46 @@
 namespace engineai_hardware_interface
 {
 hardware_interface::CallbackReturn EngineAI_SystemPositionOnlyHardware::on_init(
-  const hardware_interface::HardwareComponentInterfaceParams & params)
+  const hardware_interface::HardwareInfo & info)
 {
   if (
-    hardware_interface::SystemInterface::on_init(params) !=
+    hardware_interface::SystemInterface::on_init(info) !=
     hardware_interface::CallbackReturn::SUCCESS)
   {
     return hardware_interface::CallbackReturn::ERROR;
   }
+#if ENGINEAI_NEEDS_LOCAL_GETSET
+  logger_ = std::make_shared<rclcpp::Logger>(
+    rclcpp::get_logger("controller_manager.resource_manager.hardware_component.system.EngineAI"));
+  clock_ = std::make_shared<rclcpp::Clock>(rclcpp::Clock());
+#endif
 
   // BEGIN: This part here is for exemplary purposes - Please do not copy to your production code
   hw_start_sec_ = stod(info_.hardware_parameters["example_param_hw_start_duration_sec"]);
   hw_stop_sec_ = stod(info_.hardware_parameters["example_param_hw_stop_duration_sec"]);
   hw_slowdown_ = stod(info_.hardware_parameters["example_param_hw_slowdown"]);
-  RCLCPP_INFO(get_logger(), "Robot hardware_component update_rate is %dHz", info_.rw_rate);
   // END: This part here is for exemplary purposes - Please do not copy to your production code
+#if ENGINEAI_NEEDS_LOCAL_GETSET
+  RCLCPP_INFO(get_logger(), "Robot hardware_component initialized");
+  hw_states_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
+  hw_commands_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
+
+  joint_index_.clear();
+  joint_index_.reserve(info_.joints.size());
+  joint_state_interfaces_.clear();
+  joint_state_interfaces_.reserve(info_.joints.size());
+  joint_command_interfaces_.clear();
+  joint_command_interfaces_.reserve(info_.joints.size());
+
+  for (size_t i = 0; i < info_.joints.size(); ++i) {
+    const auto & name = info_.joints[i].name;
+    joint_index_[name] = i;
+    joint_state_interfaces_.emplace_back(name + "/position", i);
+    joint_command_interfaces_.emplace_back(name + "/position", i);
+  }
+#else
+  RCLCPP_INFO(get_logger(), "Robot hardware_component update_rate is %dHz", info_.rw_rate);
+#endif
 
   for (const hardware_interface::ComponentInfo & joint : info_.joints)
   {
@@ -126,13 +151,13 @@ hardware_interface::CallbackReturn EngineAI_SystemPositionOnlyHardware::on_init(
     if (itD != damp_map.end()) damping_per_joint_[i] = itD->second;
   }
 
-  RCLCPP_INFO(rclcpp::get_logger("EngineAI_SystemPositionOnlyHardware"),
+  RCLCPP_INFO(get_logger(),
               "Loaded per-joint stiffness/damping (n=%zu). Defaults: k=%.2f d=%.2f",
               n, default_stiffness_, default_damping_);
 
   // publisher
   imu_pub_ = node_->create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", rclcpp::QoS(10));
-  
+
   joint_pub_ = node_->create_publisher<interface_protocol::msg::JointCommand>
     ("/hardware/joint_command", rclcpp::QoS(10));
 
@@ -144,9 +169,9 @@ hardware_interface::CallbackReturn EngineAI_SystemPositionOnlyHardware::on_init(
       std::lock_guard<std::mutex> lk(mtx_);
       const auto noj = std::min(joint_names_.size(), msg->position.size());
       for(size_t i = 0; i < noj; ++i) {
-	latest_pos_[joint_names_[i]] = msg->position[i];
-	latest_vel_[joint_names_[i]] = msg->velocity[i];
-	latest_tor_[joint_names_[i]] = msg->torque[i];						      
+        latest_pos_[joint_names_[i]] = msg->position[i];
+        latest_vel_[joint_names_[i]] = msg->velocity[i];
+        latest_tor_[joint_names_[i]] = msg->torque[i];
       }
     });
 
@@ -188,7 +213,11 @@ hardware_interface::CallbackReturn EngineAI_SystemPositionOnlyHardware::on_init(
       imu_pub_->publish(latest_imu_);
     });
 
-  RCLCPP_INFO(node_->get_logger(), "EngineAI topic-bridge hardware initialized");  
+  RCLCPP_INFO(get_logger(), "info_.joints.size()=%zu", info_.joints.size());
+  for (const auto& j : info_.joints) {
+    RCLCPP_INFO(get_logger(), "info joint: %s", j.name.c_str());
+  }
+  RCLCPP_INFO(get_logger(), "EngineAI topic-bridge hardware initialized");
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
@@ -218,6 +247,136 @@ hardware_interface::CallbackReturn EngineAI_SystemPositionOnlyHardware::on_confi
 
   return hardware_interface::CallbackReturn::SUCCESS;
 }
+
+#if ENGINEAI_NEEDS_LOCAL_GETSET
+bool EngineAI_SystemPositionOnlyHardware::set_command(const std::string & key, double value)
+{
+  auto idx_opt = joint_index(joint_names_, key);
+  if (!idx_opt) {
+    RCLCPP_WARN_THROTTLE(*logger_, *clock_, 2000,
+      "set_command: unknown key='%s' (normalized='%s')",
+      key.c_str(), normalize_joint_key(key).c_str());
+    return false;
+  }
+  const size_t idx = *idx_opt;
+  if (idx >= hw_commands_.size()) {
+    const std::string joint = normalize_joint_key(key);
+    RCLCPP_ERROR(*logger_,
+      "set_command: index out of range idx=%zu size=%zu key='%s'",
+      idx, hw_commands_.size(), joint.c_str());
+    return false;
+  }
+  hw_commands_[idx] = value;
+  return true;
+}
+
+double EngineAI_SystemPositionOnlyHardware::get_command(const std::string & key) const
+{
+  auto idx_opt = joint_index(joint_names_, key);
+  if (!idx_opt) {
+    RCLCPP_WARN_THROTTLE(*logger_, *clock_, 2000,
+      "get_command: unknown key='%s' (normalized='%s')",
+      key.c_str(), normalize_joint_key(key).c_str());
+    return 0.0;
+  }
+  const size_t idx = *idx_opt;
+  if (idx >= hw_commands_.size()) {
+    const std::string joint = normalize_joint_key(key);
+    RCLCPP_ERROR(*logger_,
+      "get_command: index out of range idx=%zu size=%zu key='%s'",
+      idx, hw_commands_.size(), joint.c_str());
+    return 0.0;
+  }
+  return hw_commands_[idx];
+}
+
+bool EngineAI_SystemPositionOnlyHardware::set_state(const std::string & key, double value)
+{
+  auto idx_opt = joint_index(joint_names_, key);
+  if (!idx_opt) {
+    RCLCPP_WARN_THROTTLE(*logger_, *clock_, 2000,
+      "set_state: unknown key='%s' (normalized='%s')",
+      key.c_str(), normalize_joint_key(key).c_str());
+    return false;
+  }
+  const size_t idx = *idx_opt;
+  if (idx >= hw_states_.size()) {  // idxもsize_tなので -Wsign-compare 回避
+    const std::string joint = normalize_joint_key(key);
+    RCLCPP_ERROR(*logger_,
+      "set_state: index out of range idx=%zu size=%zu key='%s'",
+      idx, hw_states_.size(), joint.c_str());
+    return false;
+  }
+  hw_states_[idx] = value;
+  return true;
+}
+
+double EngineAI_SystemPositionOnlyHardware::get_state(const std::string & key) const
+{
+  auto idx_opt = joint_index(joint_names_, key);
+  if (!idx_opt) {
+    RCLCPP_WARN_THROTTLE(*logger_, *clock_, 2000,
+      "get_state: unknown key='%s' (normalized='%s')",
+      key.c_str(), normalize_joint_key(key).c_str());
+    return 0.0;
+  }
+  const size_t idx = *idx_opt;
+  if (idx >= hw_states_.size()) {
+    const std::string joint = normalize_joint_key(key);
+    RCLCPP_ERROR(*logger_,
+      "get_state: index out of range idx=%zu size=%zu key='%s'",
+      idx, hw_states_.size(), joint.c_str());
+    return 0.0;
+  }
+  return hw_states_[idx];
+}
+
+std::vector<hardware_interface::StateInterface>
+EngineAI_SystemPositionOnlyHardware::export_state_interfaces()
+{
+  std::vector<hardware_interface::StateInterface> state_interfaces;
+  state_interfaces.reserve(info_.joints.size());
+
+  std::fprintf(stderr, "### export_state_interfaces CALLED ### joints=%zu\n", info_.joints.size());
+
+  for (size_t i = 0; i < info_.joints.size(); ++i) {
+    const auto & jn = info_.joints[i].name;
+    std::fprintf(stderr, "export about to add [%zu] joint='%s' len=%zu\n", i, jn.c_str(), jn.size());
+
+    state_interfaces.emplace_back(
+      hardware_interface::StateInterface(
+        jn,
+        hardware_interface::HW_IF_POSITION,
+        &hw_states_[i]
+      )
+    );
+
+    // 返す実体からも表示
+    std::fprintf(stderr, "export added [%zu] name='%s' if='%s'\n",
+      i,
+      state_interfaces.back().get_name().c_str(),
+      state_interfaces.back().get_interface_name().c_str()
+    );
+  }
+
+  std::fprintf(stderr, "export_state_interfaces returning %zu interfaces\n", state_interfaces.size());
+  return state_interfaces;
+}
+
+
+std::vector<hardware_interface::CommandInterface>
+EngineAI_SystemPositionOnlyHardware::export_command_interfaces()
+{
+  std::vector<hardware_interface::CommandInterface> command_interfaces;
+  for (uint i = 0; i < info_.joints.size(); i++)
+  {
+    command_interfaces.emplace_back(hardware_interface::CommandInterface(
+      info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_commands_[i]));
+  }
+
+  return command_interfaces;
+}
+#endif
 
 hardware_interface::CallbackReturn EngineAI_SystemPositionOnlyHardware::on_activate(
   const rclcpp_lifecycle::State & /*previous_state*/)
@@ -273,7 +432,7 @@ hardware_interface::return_type EngineAI_SystemPositionOnlyHardware::read(
       set_state(joint + "/position", it->second);
     }
   }
-  
+
   return hardware_interface::return_type::OK;
 }
 
@@ -294,7 +453,7 @@ hardware_interface::return_type EngineAI_SystemPositionOnlyHardware::write(
 
   // publish joint_command_ros
   interface_protocol::msg::JointCommand cmd;
-    
+
   // header
   cmd.header.stamp = get_clock()->now();
   cmd.header.frame_id = "";  // 必要なら robot 名など
@@ -314,7 +473,7 @@ hardware_interface::return_type EngineAI_SystemPositionOnlyHardware::write(
   cmd.parallel_parser_type = interface_protocol::msg::ParallelParserType::RL_PARSER;
 
   joint_pub_->publish(cmd);;
-  
+
   return hardware_interface::return_type::OK;
 }
 
