@@ -11,13 +11,19 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ${{ matrix.image }}
+      platform: ${{ matrix.platform }}
     strategy:
       matrix:
         include:
           - image: ros:humble-ros-base
             ros-distro: humble
+            platform: linux/arm64
+          - image: ros:humble-ros-base
+            ros-distro: humble
+            platform: linux/amd64
           - image: ros:jazzy-ros-base
             ros-distro: jazzy
+            platform: linux/amd64
       fail-fast: false
 
     steps:
