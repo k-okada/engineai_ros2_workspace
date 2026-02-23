@@ -26,13 +26,13 @@ Merges two `interface_protocol/msg/JointCommand` topics:
 - RL command topic (base + publish clock)
 - ROS command topic (optional upper‑body override)
 
-Publishing rate follows the **RL topic** (the RL callback is the publish clock).  
+Publishing rate follows the **RL topic** (the RL callback is the publish clock).
 Supports smooth transitions when switching the upper‑body source.
 
 ### 3) `engineai_cmd_vel_controller` (node)
 
 Converts `geometry_msgs/msg/Twist` (`cmd_vel`) into `interface_protocol/msg/GamepadKeys`
-(EngineAI analog command message used by the downstream interface stack).  
+(EngineAI analog command message used by the downstream interface stack).
 Publishes a STOP message on shutdown signals.
 
 ---
@@ -71,9 +71,9 @@ source install/setup.bash
 
 The EngineAI control stack requires **three components**:
 
-1. MuJoCo simulator  
-2. RL control example  
-3. ROS2 control + joint command mux  
+1. MuJoCo simulator
+2. RL control example
+3. ROS2 control + joint command mux
 
 These must be started in the correct order.
 
@@ -181,7 +181,7 @@ Run:
 ### Topics
 
 - Subscribes:
-  - `topic_rl` (default: `/hardware/joint_command_rl`)  
+  - `topic_rl` (default: `/hardware/joint_command_rl`)
   - `topic_ros` (default: `/hardware/joint_command_ros`)
 - Publishes:
   - `topic_out` (default: `/hardware/joint_command`)
@@ -219,7 +219,7 @@ Run:
 
 - `cmd_vel_topic` (`string`, default: `/cmd_vel`)
 - `out_topic` (`string`, default: `/hardware/gamepad_keys`)
-- `publish_rate_hz` (`double`, default: `50.0`)  
+- `publish_rate_hz` (`double`, default: `50.0`)
   (If set, a timer republishes the last command at this rate.)
 
 ---
